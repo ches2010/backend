@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>代理管理器</title>
+    <link rel="stylesheet" href="static/style.css">
+</head>
+<body>
+    <div class="container">
+        <h1>代理管理器</h1>
+        
+        <div class="controls">
+            <button id="refreshBtn">刷新代理</button>
+            <button id="startServiceBtn">启动服务</button>
+            <button id="stopServiceBtn">停止服务</button>
+            <!-- 可以添加更多控制按钮 -->
+        </div>
+
+        <div class="status">
+            <h2>服务状态</h2>
+            <p id="serviceStatus">未知</p>
+        </div>
+
+        <div class="filters">
+            <label for="regionFilter">地区筛选:</label>
+            <select id="regionFilter">
+                <option value="All">全部</option>
+                <!-- 动态填充地区选项 -->
+            </select>
+            <label for="maxLatencyFilter">最大延迟 (ms):</label>
+            <input type="number" id="maxLatencyFilter" min="0" placeholder="例如 1000">
+            <button id="applyFiltersBtn">应用筛选</button>
+        </div>
+
+        <div class="stats">
+            <p>总计代理: <span id="totalProxies">0</span></p>
+            <p>可用代理: <span id="activeProxies">0</span></p>
+        </div>
+
+        <div class="proxy-list-container">
+            <h2>可用代理列表</h2>
+            <table id="proxyTable">
+                <thead>
+                    <tr>
+                        <th>代理地址</th>
+                        <th>协议</th>
+                        <th>延迟 (s)</th>
+                        <th>速度 (Mbps)</th>
+                        <th>匿名度</th>
+                        <th>地区</th>
+                        <th>评分</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <!-- 动态填充代理数据 -->
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <script src="static/script.js"></script>
+</body>
+</html>
+
+
+
