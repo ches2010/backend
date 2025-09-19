@@ -1,4 +1,4 @@
-# modules/proxy_manager.py (增强全能版)
+# modules/proxy_manager.py (增强全能版 - 修复版)
 
 import requests
 from requests.adapters import HTTPAdapter
@@ -1099,135 +1099,95 @@ class ProxyManager:
 
     # ========== 新增：启动本地代理服务 ==========
     def start_local_proxy_service(self, http_host="127.0.0.1", http_port=8888, socks5_host="127.0.0.1", socks5_port=1080, auto_refresh_minutes=0):
-        if not
- self.log_queue:
-            raise ValueError("请先设置 log_queue"
-)
-        if not
- self._searcher:
+        if not self.log_queue:
+            raise ValueError("请先设置 log_queue")
+        if not self._searcher:
             self._searcher = self.AssetSearcher(self.log_queue)
         self._proxy_server = self.ProxyServer(self, http_host, http_port, socks5_host, socks5_port, self.log_queue)
         self._proxy_server.start_all()
         self._auto_refresh_minutes = auto_refresh_minutes
-        if auto_refresh_minutes > 0
-:
-            self._refresh_thread = threading.Thread(target=self._auto_refresh_proxies, daemon=True
-)
+        if auto_refresh_minutes > 0:
+            self._refresh_thread = threading.Thread(target=self._auto_refresh_proxies, daemon=True)
             self._refresh_thread.start()
-            self.log(f"代理自动刷新已启用，每 {auto_refresh_minutes} 分钟执行一次。"
-)
+            self.log(f"代理自动刷新已启用，每 {auto_refresh_minutes} 分钟执行一次。")
 
     def stop_local_proxy_service(self):
-        if
- self._proxy_server:
+        if self._proxy_server:
             self._proxy_server.stop_all()
-        if self._refresh_thread and
- self._refresh_thread.is_alive():
+        if self._refresh_thread and self._refresh_thread.is_alive():
             # 无法直接中断线程，但可设标志位
             self._auto_refresh_minutes = 0
-            self._refresh_thread.join(timeout=2
-)
+            self._refresh_thread.join(timeout=2)
 
     def _auto_refresh_proxies(self):
-        while self._auto_refresh_minutes > 0
-:
-            try
-:
-                self.log("[🔄] 自动刷新：从资产引擎获取最新代理..."
-)
+        while self._auto_refresh_minutes > 0:
+            try:
+                self.log("[🔄] 自动刷新：从资产引擎获取最新代理...")
                 # 这里应使用上次的配置，或提供默认配置
                 default_settings = {
-                    "fofa": {"enabled": True, "key": "your_email:your_key", "query": 'protocol="socks5"', "size": 50
-},
-                    "quake": {"enabled": False
-},
-                    "hunter": {"enabled": False
-}
+                    "fofa": {"enabled": True, "key": "your_email:your_key", "query": 'protocol="socks5"', "size": 50},
+                    "quake": {"enabled": False},
+                    "hunter": {"enabled": False}
                 }
                 proxies = self._searcher.search_all(default_settings)
-                if
- proxies:
-                    proxy_list = [{'proxy': p, 'protocol': 'SOCKS5'} for p in
- proxies]
+                if proxies:
+                    proxy_list = [{'proxy': p, 'protocol': 'SOCKS5'} for p in proxies]
                     self.update_proxies(proxy_list)
-                    self.log(f"[✅] 自动刷新完成，新增 {len(proxies)} 个代理。"
-)
-                else
-:
-                    self.log("[⚠️] 自动刷新未获取到新代理。"
-)
-            except Exception as
- e:
-                self.log(f"[❌] 自动刷新失败: {e}"
-)
-            for _ in range(self._auto_refresh_minutes * 60
-):
-                time.sleep(1
-)
+                    self.log(f"[✅] 自动刷新完成，新增 {len(proxies)} 个代理。")
+                else:
+                    self.log("[⚠️] 自动刷新未获取到新代理。")
+            except Exception as e:
+                self.log(f"[❌] 自动刷新失败: {e}")
+            # 简单的等待，可以被中断
+            for _ in range(self._auto_refresh_minutes * 60):
+                time.sleep(1)
+                if self._auto_refresh_minutes <= 0:
+                     return # 如果标志位被清除，则退出循环
 
     # ========== 新增：从资产引擎获取代理 ==========
     def fetch_proxies_from_engines(self, settings):
-        if not
- self._searcher:
+        if not self._searcher:
             self._searcher = self.AssetSearcher(self.log_queue)
         proxies = self._searcher.search_all(settings)
-        if
- proxies:
-            proxy_list = [{'proxy': p, 'protocol': 'SOCKS5'} for p in
- proxies]
+        if proxies:
+            proxy_list = [{'proxy': p, 'protocol': 'SOCKS5'} for p in proxies]
             self.update_proxies(proxy_list)
-            self.log(f"[✅] 从资产引擎加载 {len(proxies)} 个代理。"
-)
+            self.log(f"[✅] 从资产引擎加载 {len(proxies)} 个代理。")
             return True
-        else
-:
-            self.log("[⚠️] 未从资产引擎获取到代理。"
-)
+        else:
+            self.log("[⚠️] 未从资产引擎获取到代理。")
             return False
 
     # ========== 新增：更新代理池（供轮换器使用） ==========
     def update_proxies(self, proxy_list):
-        with
- self.lock:
+        with self.lock:
             self.all_proxies = proxy_list
             self.proxies_by_country.clear()
-            for p in
- proxy_list:
-                country = p.get('location', 'Unknown'
-)
+            for p in proxy_list:
+                country = p.get('location', 'Unknown')
                 self.proxies_by_country[country].append(p)
             self.indices.clear()
-            self.current_proxy = None if proxy_list else None
+            self.current_proxy = None if not proxy_list else None
 
     # ========== 新增：获取当前/下一个代理（供ProxyServer调用） ==========
     def get_current_proxy(self):
-        with
- self.lock:
-            if not self.current_proxy and
- self.all_proxies:
-                self.current_proxy = self.all_proxies[0
-]
-            return
- self.current_proxy
+        with self.lock:
+            if not self.current_proxy and self.all_proxies:
+                self.current_proxy = self.all_proxies[0]
+            return self.current_proxy
 
     def get_next_proxy(self):
-        with
- self.lock:
-            if not
- self.all_proxies:
+        with self.lock:
+            if not self.all_proxies:
                 return None
-            self.indices['global'] = (self.indices['global'] + 1) % len
-(self.all_proxies)
-            self.current_proxy = self.all_proxies[self.indices['global'
-]]
-            return
- self.current_proxy
+            self.indices['global'] = (self.indices['global'] + 1) % len(self.all_proxies)
+            self.current_proxy = self.all_proxies[self.indices['global']]
+            return self.current_proxy
 
     # ========== 新增：设置日志队列 ==========
     def set_log_queue(self, log_queue):
         self.log_queue = log_queue
 
     def log(self, message):
-        if
- self.log_queue:
+        if self.log_queue:
             self.log_queue.put(f"[Manager] {message}")
