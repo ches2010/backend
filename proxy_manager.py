@@ -1,4 +1,5 @@
-# modules/proxy_manager.py
+# modules/proxy_manager.py (增强全能版)
+
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
@@ -11,6 +12,10 @@ import threading
 from collections import defaultdict
 import socket
 import subprocess
+import select
+import socks
+from urllib.parse import urlparse
+import struct
 
 class ProxyManager:
     """全能代理管理器，负责获取、验证、管理、轮换和筛选代理。"""
@@ -105,6 +110,276 @@ class ProxyManager:
         self.indices = defaultdict(lambda: -1)
         self.current_proxy = None
         self.lock = threading.Lock()
+        self.current_filter_region = "All"
+        self.current_filter_quality_latency_ms = None
+
+        # --- 初始化 Logger ---
+        self.log_queue = None  # 外部传入或默认队列
+
+        # --- 初始化 AssetSearcher (内嵌简化版) ---
+        self._searcher = None  # 初始化时创建
+
+        # --- 初始化 ProxyServer (内嵌) ---
+        self._proxy_server = None
+        self._auto_refresh_minutes = 0
+        self._refresh_thread = None
+
+
+    # ========== AssetSearcher 内嵌实现 ==========
+    class AssetSearcher:
+        def __init__(self, log_queue):
+            self.log_queue = log_queue
+            self.engines = {
+                'fofa': self._search_fofa,
+                'quake': self._search_quake,
+                'hunter': self._search_hunter
+            }
+
+        def log(self, msg):
+            if self.log_queue:
+                self.log_queue.put(f"[AssetSearcher] {msg}")
+
+        def _search_fofa(self, key, query, size, page=1):
+            email, fofa_key = key.split(':', 1)
+            url = f"https://fofa.info/api/v1/search/all?email={email}&key={fofa_key}&qbase64={query.encode().hex()}&size={size}&page={page}&fields=host,port"
+            try:
+                res = requests.get(url, timeout=10)
+                res.raise_for_status()
+                data = res.json()
+                return [f"{item[0]}:{item[1]}" for item in data.get('results', [])]
+            except Exception as e:
+                self.log(f"FOFA 搜索失败: {e}")
+                return []
+
+        def _search_quake(self, key, query, size):
+            url = "https://quake.360.cn/api/v3/search/quake_service"
+            headers = {'X-QuakeToken': key}
+            data = {"query": query, "size": size, "ignore_cache": False}
+            try:
+                res = requests.post(url, json=data, headers=headers, timeout=10)
+                res.raise_for_status()
+                results = res.json().get('data', [])
+                return [f"{r['ip']}:{r['port']}" for r in results]
+            except Exception as e:
+                self.log(f"Quake 搜索失败: {e}")
+                return []
+
+        def _search_hunter(self, key, query, size, start=1):
+            url = f"https://hunter.qianxin.com/openApi/search?api-key={key}&search={query}&page={start}&page_size={size}&is_web=3"
+            try:
+                res = requests.get(url, timeout=10)
+                res.raise_for_status()
+                data = res.json()
+                return [f"{item['ip']}:{item['port']}" for item in data.get('data', {}).get('arr', [])]
+            except Exception as e:
+                self.log(f"Hunter 搜索失败: {e}")
+                return []
+
+        def search_all(self, settings):
+            all_proxies = set()
+            with ThreadPoolExecutor(max_workers=5) as executor:
+                futures = []
+                for engine_name, config in settings.items():
+                    if not config.get('enabled', False):
+                        continue
+                    func = self.engines.get(engine_name)
+                    if not func:
+                        continue
+                    future = executor.submit(
+                        func,
+                        config['key'],
+                        config['query'],
+                        config.get('size', 50)
+                    )
+                    futures.append(future)
+
+                for future in as_completed(futures):
+                    try:
+                        proxies = future.result()
+                        all_proxies.update(proxies)
+                    except Exception as e:
+                        self.log(f"引擎搜索异常: {e}")
+
+            return list(all_proxies)
+
+
+    # ========== ProxyServer 内嵌实现 ==========
+    class ProxyServer:
+        def __init__(self, manager, http_host, http_port, socks5_host, socks5_port, log_queue):
+            self.manager = manager
+            self._log_queue = log_queue
+            self._running = False
+            self._http_host = http_host
+            self._http_port = http_port
+            self._http_server_socket = None
+            self._http_thread = None
+            self._socks5_host = socks5_host
+            self._socks5_port = socks5_port
+            self._socks5_server_socket = None
+            self._socks5_thread = None
+            self.rotate_per_request = False
+
+        def log(self, message):
+            self._log_queue.put(f"[Server] {message}")
+
+        def set_rotation_mode(self, per_request: bool):
+            self.rotate_per_request = per_request
+            mode = "逐请求轮换" if per_request else "固定当前"
+            self.log(f"服务轮换模式已切换为: {mode}")
+
+        def start_all(self):
+            if self._running:
+                return
+            self._running = True
+            self._http_thread = threading.Thread(target=self._run_http_server, daemon=True)
+            self._http_thread.start()
+            self._socks5_thread = threading.Thread(target=self._run_socks5_server, daemon=True)
+            self._socks5_thread.start()
+            self.log(f"HTTP 服务启动于 {self._http_host}:{self._http_port}")
+            self.log(f"SOCKS5 服务启动于 {self._socks5_host}:{self._socks5_port}")
+
+        def stop_all(self):
+            if not self._running:
+                return
+            self._running = False
+            for sock in [self._http_server_socket, self._socks5_server_socket]:
+                if sock: sock.close()
+            for t in [self._http_thread, self._socks5_thread]:
+                if t and t.is_alive(): t.join()
+            self.log("所有代理服务已停止。")
+
+        def _get_upstream_connection(self, target_host, target_port):
+            if self.rotate_per_request:
+                proxy_info = self.manager.get_next_proxy()
+            else:
+                proxy_info = self.manager.get_current_proxy()
+            if not proxy_info:
+                self.log("[!] 代理池为空")
+                return None
+            addr = proxy_info.get('proxy')
+            proto = proxy_info.get('protocol', 'SOCKS5')
+            if not addr:
+                return None
+            upstream_addr, upstream_port_str = addr.split(':')
+            proxy_type_map = {'HTTP': socks.HTTP, 'SOCKS4': socks.SOCKS4, 'SOCKS5': socks.SOCKS5}
+            upstream_protocol = proxy_type_map.get(proto.upper())
+            if not upstream_protocol:
+                self.log(f"[!] 不支持协议: {proto}")
+                return None
+            remote_socket = socks.socksocket()
+            try:
+                remote_socket.set_proxy(proxy_type=upstream_protocol, addr=upstream_addr, port=int(upstream_port_str))
+                remote_socket.connect((target_host, target_port))
+                return remote_socket
+            except Exception as e:
+                self.log(f"[!] 代理 {addr} 连接失败: {e}")
+                remote_socket.close()
+                return None
+
+        def _forward_data(self, sock1, sock2):
+            while self._running:
+                try:
+                    readable, _, exceptional = select.select([sock1, sock2], [], [sock1, sock2], 5)
+                    if exceptional or not readable: break
+                    for sock in readable:
+                        other = sock2 if sock is sock1 else sock1
+                        data = sock.recv(8192)
+                        if not data: return
+                        other.sendall(data)
+                except: break
+
+        def _handle_http_client(self, client_socket):
+            remote_socket = None
+            try:
+                data = client_socket.recv(8192)
+                if not data: return
+                first_line = data.split(b'\r\n')[0].decode('utf-8', 'ignore')
+                method, url, _ = first_line.split()
+                if method == 'CONNECT':
+                    host, port_str = url.split(':')
+                    port = int(port_str)
+                else:
+                    parsed = urlparse(url)
+                    host = parsed.hostname
+                    port = parsed.port or 80
+                remote_socket = self._get_upstream_connection(host, port)
+                if not remote_socket:
+                    client_socket.sendall(b'HTTP/1.1 502 Bad Gateway\r\n\r\n')
+                    return
+                if method == 'CONNECT':
+                    client_socket.sendall(b'HTTP/1.1 200 Connection Established\r\n\r\n')
+                else:
+                    remote_socket.sendall(data)
+                self._forward_data(client_socket, remote_socket)
+            except Exception as e:
+                if not isinstance(e, (ConnectionResetError, BrokenPipeError, OSError)):
+                    self.log(f"HTTP处理异常: {e}")
+            finally:
+                if remote_socket: remote_socket.close()
+                if client_socket: client_socket.close()
+
+        def _handle_socks5_client(self, client_socket):
+            remote_socket = None
+            try:
+                data = client_socket.recv(2)
+                if not data or data[0] != 5: return
+                nmethods = data[1]
+                client_socket.recv(nmethods)
+                client_socket.sendall(b"\x05\x00")
+                data = client_socket.recv(4)
+                if not data or data[0] != 5 or data[1] != 1: return
+                atyp = data[3]
+                if atyp == 1:
+                    addr = socket.inet_ntoa(client_socket.recv(4))
+                elif atyp == 3:
+                    domain_len = client_socket.recv(1)[0]
+                    addr = client_socket.recv(domain_len).decode('utf-8')
+                else:
+                    client_socket.sendall(b"\x05\x08\x00\x01\x00\x00\x00\x00\x00\x00")
+                    return
+                port = struct.unpack('!H', client_socket.recv(2))[0]
+                remote_socket = self._get_upstream_connection(addr, port)
+                if not remote_socket:
+                    client_socket.sendall(b"\x05\x04\x00\x01\x00\x00\x00\x00\x00\x00")
+                    return
+                client_socket.sendall(b"\x05\x00\x00\x01\x00\x00\x00\x00\x00\x00")
+                self._forward_data(client_socket, remote_socket)
+            except Exception as e:
+                if not isinstance(e, (ConnectionResetError, BrokenPipeError, OSError)):
+                    self.log(f"SOCKS5处理异常: {e}")
+            finally:
+                if remote_socket: remote_socket.close()
+                if client_socket: client_socket.close()
+
+        def _run_http_server(self):
+            try:
+                self._http_server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                self._http_server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                self._http_server_socket.bind((self._http_host, self._http_port))
+                self._http_server_socket.listen(20)
+            except Exception as e:
+                self.log(f"[!] HTTP启动失败: {e}")
+                return
+            while self._running:
+                try:
+                    client, _ = self._http_server_socket.accept()
+                    threading.Thread(target=self._handle_http_client, args=(client,), daemon=True).start()
+                except OSError: break
+
+        def _run_socks5_server(self):
+            try:
+                self._socks5_server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                self._socks5_server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                self._socks5_server_socket.bind((self._socks5_host, self._socks5_port))
+                self._socks5_server_socket.listen(20)
+            except Exception as e:
+                self.log(f"[!] SOCKS5启动失败: {e}")
+                return
+            while self._running:
+                try:
+                    client, _ = self._socks5_server_socket.accept()
+                    threading.Thread(target=self._handle_socks5_client, args=(client,), daemon=True).start()
+                except OSError: break
         
         # 保存当前激活的过滤器状态
         self.current_filter_region = "All"
@@ -820,3 +1095,139 @@ class ProxyManager:
 
         log_queue.put(f"[+] 代理刷新完成，共验证并添加 {validated_count} 个可用代理。")
         return validated_count
+
+
+    # ========== 新增：启动本地代理服务 ==========
+    def start_local_proxy_service(self, http_host="127.0.0.1", http_port=8888, socks5_host="127.0.0.1", socks5_port=1080, auto_refresh_minutes=0):
+        if not
+ self.log_queue:
+            raise ValueError("请先设置 log_queue"
+)
+        if not
+ self._searcher:
+            self._searcher = self.AssetSearcher(self.log_queue)
+        self._proxy_server = self.ProxyServer(self, http_host, http_port, socks5_host, socks5_port, self.log_queue)
+        self._proxy_server.start_all()
+        self._auto_refresh_minutes = auto_refresh_minutes
+        if auto_refresh_minutes > 0
+:
+            self._refresh_thread = threading.Thread(target=self._auto_refresh_proxies, daemon=True
+)
+            self._refresh_thread.start()
+            self.log(f"代理自动刷新已启用，每 {auto_refresh_minutes} 分钟执行一次。"
+)
+
+    def stop_local_proxy_service(self):
+        if
+ self._proxy_server:
+            self._proxy_server.stop_all()
+        if self._refresh_thread and
+ self._refresh_thread.is_alive():
+            # 无法直接中断线程，但可设标志位
+            self._auto_refresh_minutes = 0
+            self._refresh_thread.join(timeout=2
+)
+
+    def _auto_refresh_proxies(self):
+        while self._auto_refresh_minutes > 0
+:
+            try
+:
+                self.log("[🔄] 自动刷新：从资产引擎获取最新代理..."
+)
+                # 这里应使用上次的配置，或提供默认配置
+                default_settings = {
+                    "fofa": {"enabled": True, "key": "your_email:your_key", "query": 'protocol="socks5"', "size": 50
+},
+                    "quake": {"enabled": False
+},
+                    "hunter": {"enabled": False
+}
+                }
+                proxies = self._searcher.search_all(default_settings)
+                if
+ proxies:
+                    proxy_list = [{'proxy': p, 'protocol': 'SOCKS5'} for p in
+ proxies]
+                    self.update_proxies(proxy_list)
+                    self.log(f"[✅] 自动刷新完成，新增 {len(proxies)} 个代理。"
+)
+                else
+:
+                    self.log("[⚠️] 自动刷新未获取到新代理。"
+)
+            except Exception as
+ e:
+                self.log(f"[❌] 自动刷新失败: {e}"
+)
+            for _ in range(self._auto_refresh_minutes * 60
+):
+                time.sleep(1
+)
+
+    # ========== 新增：从资产引擎获取代理 ==========
+    def fetch_proxies_from_engines(self, settings):
+        if not
+ self._searcher:
+            self._searcher = self.AssetSearcher(self.log_queue)
+        proxies = self._searcher.search_all(settings)
+        if
+ proxies:
+            proxy_list = [{'proxy': p, 'protocol': 'SOCKS5'} for p in
+ proxies]
+            self.update_proxies(proxy_list)
+            self.log(f"[✅] 从资产引擎加载 {len(proxies)} 个代理。"
+)
+            return True
+        else
+:
+            self.log("[⚠️] 未从资产引擎获取到代理。"
+)
+            return False
+
+    # ========== 新增：更新代理池（供轮换器使用） ==========
+    def update_proxies(self, proxy_list):
+        with
+ self.lock:
+            self.all_proxies = proxy_list
+            self.proxies_by_country.clear()
+            for p in
+ proxy_list:
+                country = p.get('location', 'Unknown'
+)
+                self.proxies_by_country[country].append(p)
+            self.indices.clear()
+            self.current_proxy = None if proxy_list else None
+
+    # ========== 新增：获取当前/下一个代理（供ProxyServer调用） ==========
+    def get_current_proxy(self):
+        with
+ self.lock:
+            if not self.current_proxy and
+ self.all_proxies:
+                self.current_proxy = self.all_proxies[0
+]
+            return
+ self.current_proxy
+
+    def get_next_proxy(self):
+        with
+ self.lock:
+            if not
+ self.all_proxies:
+                return None
+            self.indices['global'] = (self.indices['global'] + 1) % len
+(self.all_proxies)
+            self.current_proxy = self.all_proxies[self.indices['global'
+]]
+            return
+ self.current_proxy
+
+    # ========== 新增：设置日志队列 ==========
+    def set_log_queue(self, log_queue):
+        self.log_queue = log_queue
+
+    def log(self, message):
+        if
+ self.log_queue:
+            self.log_queue.put(f"[Manager] {message}")
