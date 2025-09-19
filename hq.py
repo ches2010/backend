@@ -1,3 +1,5 @@
+# hq.py (优化版)
+
 import requests
 import json
 import os
@@ -88,10 +90,13 @@ def save_proxies_to_file(proxies_set, filename, output_dir):
         print(f"\n[ERROR] 保存文件 '{filename}' 时出错: {e}")
 
 
-def fetch_and_save_proxies():
+def fetch_and_save_proxies(output_dir=None):
     """
     获取、清理、并智能分类合并所有来源的代理，然后分别保存到文件。
     """
+    if output_dir is None:
+        output_dir = os.getcwd() # 默认保存到当前目录
+    
     http_proxies = set()
     socks5_proxies = set()
     # 可以选择性地为SOCKS4创建集合
@@ -151,8 +156,6 @@ def fetch_and_save_proxies():
 
         print("-" * 20)
     
-    # [!] 修改：将输出目录设置为当前脚本所在的目录
-    output_dir = os.getcwd()
     save_proxies_to_file(http_proxies, "http.txt", output_dir)
     save_proxies_to_file(socks5_proxies, "git.txt", output_dir)
     # save_proxies_to_file(socks4_proxies, "socks4.txt", output_dir)
