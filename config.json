@@ -1,0 +1,37 @@
+{
+    "proxy_server": {
+        "http": {
+            "host": "127.0.0.1",
+            "port": 8888
+        },
+        "socks5": {
+            "host": "127.0.0.1",
+            "port": 1080
+        },
+        "auto_refresh_minutes": 0
+    },
+    "asset_engines": {
+        "fofa": {
+            "enabled": false,
+            "key": "your_email:your_api_key",
+            "query": "protocol=\"socks5\"",
+            "size": 50
+        },
+        "quake": {
+            "enabled": false,
+            "key": "your_quake_api_key"
+        },
+        "hunter": {
+            "enabled": false,
+            "key": "your_hunter_api_key"
+        }
+    },
+    "validation": {
+        "timeout": 5,
+        "max_workers": 100
+    }
+}
+
+
+
+
