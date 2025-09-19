@@ -1,0 +1,124 @@
+/* web_ui/static/style.css */
+
+body {
+    font-family: Arial, sans-serif;
+    margin: 0;
+    padding: 20px;
+    background-color: #f4f4f4;
+}
+
+.container {
+    max-width: 1200px;
+    margin: 0 auto;
+    background-color: #fff;
+    padding: 20px;
+    border-radius: 5px;
+    box-shadow: 0 0 10px rgba(0,0,0,0.1);
+}
+
+h1, h2 {
+    color: #333;
+}
+
+.controls {
+    margin-bottom: 20px;
+}
+
+.controls button {
+    padding: 10px 15px;
+    margin-right: 10px;
+    border: none;
+    border-radius: 3px;
+    cursor: pointer;
+    background-color: #007bff;
+    color: white;
+}
+
+.controls button:hover {
+    background-color: #0056b3;
+}
+
+.status, .stats, .filters {
+    margin-bottom: 20px;
+}
+
+.filters label {
+    margin-right: 10px;
+}
+
+.filters select, .filters input {
+    padding: 5px;
+    margin-right: 10px;
+}
+
+.filters button {
+    padding: 5px 10px;
+    border: none;
+    border-radius: 3px;
+    cursor: pointer;
+    background-color: #28a745;
+    color: white;
+}
+
+.filters button:hover {
+    background-color: #1e7e34;
+}
+
+.stats p {
+    display: inline-block;
+    margin-right: 20px;
+    font-weight: bold;
+}
+
+.proxy-list-container {
+    overflow-x: auto; /* 水平滚动 */
+}
+
+table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-top: 10px;
+}
+
+th, td {
+    border: 1px solid #ddd;
+    padding: 8px;
+    text-align: left;
+}
+
+th {
+    background-color: #f2f2f2;
+    position: sticky;
+    top: 0;
+    z-index: 10;
+}
+
+tr:nth-child(even) {
+    background-color: #f9f9f9;
+}
+
+tr:hover {
+    background-color: #f5f5f5;
+}
+
+
+/* 状态指示器 */
+.status-indicator {
+    display: inline-block;
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    margin-right: 5px;
+}
+
+.status-indicator.working {
+    background-color: green;
+}
+
+.status-indicator.unavailable {
+    background-color: red;
+}
+
+
+
+
